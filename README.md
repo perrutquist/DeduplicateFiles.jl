@@ -27,7 +27,7 @@ pair of files. It is required to be consistent in its choice of files to
 delete. So we use alphabetical ordering of the file paths as a tie breaker.
 
 ```
-list = deduplicate_files("foo", (a,b)->A.realpath > B.realpath, dry_run=true)
+list = deduplicate_files("foo", (a,b)->A.realpath > B.realpath, verbose=true, dry_run=true)
 ```
 
 We then examine the returned list. If all looks good, we re-run the command
@@ -36,7 +36,7 @@ without the `dry_run` argument.
 ## Usage
 
 The typical way to use the software is to first call the function
-`list = deduplicate_files(stardirs, dfun, dry_run=true)`, where `startdirs`
+`list = deduplicate_files(startdirs, dfun, dry_run=true)`, where `startdirs`
 is an array of directory paths, and `dfun` is a "decision function" that tells
 the software which file(s) to delete from a set up duplicates. The directories
 will be searched recursively and the duplicate files that would be deleted will

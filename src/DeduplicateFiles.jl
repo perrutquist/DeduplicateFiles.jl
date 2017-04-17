@@ -1,7 +1,9 @@
 module DeduplicateFiles
 
+using CRC
+
 export DeduplicationFile, same_file, identical_files,
-       delete_duplicate_file, indexfiles
+       delete_duplicate_file, indexfiles, deduplicate_files
 
 "A structure with data about files to keep/delete."
 type DeduplicationFile
@@ -110,9 +112,9 @@ thrown and no file is deleted. (Requires `ln` to be available via system call.)
 even if it is a hardlink to `file-to-keep` (and therefore didn't occupy any
 extra disk space).
 """
-
 function delete_duplicate_file(; delete::AbstractString="", keep::AbstractString="",
-                               dry_run=false, replace_with=:nothing, delete_hardlinks=false)
+                               dry_run::Bool=false, replace_with::Symbol=:nothing,
+                               delete_hardlinks::Bool=false, verbose::Bool=false)
   (!isempty(delete) && !isempty(keep)) || throw(ArgumentError("Missing file name."))
   !islink(delete) || error("The file to delete must not be as symbolic link.")
   replace_with in [:nothing, :symlink, :hardlink] ||
@@ -123,7 +125,7 @@ function delete_duplicate_file(; delete::AbstractString="", keep::AbstractString
   delete = realpath(delete)
   keep = realpath(keep)
 
-  replace_with != :hardlink || stat(a).device == stat(b).device ||
+  replace_with != :hardlink || stat(delete).device == stat(keep).device ||
       error("Cannot create hard-links across file systems.")
 
   !same_file(delete, keep) || return false
@@ -131,6 +133,8 @@ function delete_duplicate_file(; delete::AbstractString="", keep::AbstractString
   hl = is_hardlink(delete, keep)
 
   hl || identical_files(delete, keep) || return false
+
+  verbose && println(dry_run?"Would delete ":"Deleting ", delete, " as duplicate of ", keep, " (", stat(delete).size, " byters)")
 
   if !dry_run && (!hl || ( hl && delete_hardlinks && replace_with != :hardlink ))
     rm(delete)
@@ -153,8 +157,8 @@ end
    `indexfiles(start; idx, follow_symlinks=false)`
 
 Create an index of all files found when walking the directory tree.
+Returns an iterator over `DeduplicationFile` objects.
 """
-
 function indexfiles(start::AbstractString; idx=Dict{UInt64,DeduplicationFile}(),
       follow_symlinks=false)
   realstart = realpath(start)
@@ -171,6 +175,7 @@ function indexfiles(start::AbstractString; idx=Dict{UInt64,DeduplicationFile}(),
   end
   return values(idx)
 end
+
 function indexfiles(starts::AbstractArray; idx=Dict{UInt64,DeduplicationFile}(),
     follow_symlinks=false)
   for start in starts
@@ -178,5 +183,124 @@ function indexfiles(starts::AbstractArray; idx=Dict{UInt64,DeduplicationFile}(),
   end
   return values(idx)
 end
+
+"""
+   `processdups(by, proc, list)`
+
+Apply the `by` function to each item in `list`, for every set of two or more
+items that generated identical `by` values, call `proc` on that set.
+The `proc` function should return a list, and processdups returns a
+concatenation of all returned lists.
+"""
+function processdups(by::Function, proc::Function, list::AbstractArray; quickpair::Bool=false)
+  if quickpair && length(list)==2
+    return(proc(list))
+  end
+
+  ret = Array{Any,1}[]
+
+  length(list) >= 2 || return ret
+
+  bylist = map(i->(i, by(list[i])), 1:length(list));
+
+  # First sort the list...
+  sort!(bylist, by=i->i[2])
+
+  # ...then go through the list. Duplicates will be next to each other.
+  ci = 1;
+  cmp = bylist[ci][2]
+  for i=1:length(bylist)
+    if i==length(bylist) || bylist[i+1][2] != cmp
+      if i>ci
+        sublist = map(j->list[bylist[j][1]], ci:i)
+        ret = vcat(ret, proc(sublist))
+      end
+      ci = i+1;
+      if i<length(bylist)
+        cmp = bylist[ci][2];
+      end
+    end
+  end
+  return ret
+end
+
+"""
+   `deldups(list, dfun; dry_run)`
+
+Determine which files from a list of suspected duplicates that should be
+deleted according to the decision function `dfun`, and delete them if they
+actually are duplicates.
+"""
+function deldups(list, dfun; kwargs...)
+  deleted = Array{Tuple{DeduplicationFile, DeduplicationFile}, 1}();
+  sort!(list, lt=dfun)
+  lmax = length(list)
+  i = 1
+  while i<lmax
+    for j=length(list):-1:i+1
+      if dfun(list[i], list[j]) && delete_duplicate_file(delete=list[i].realpath,
+             keep=list[j].realpath; kwargs...)
+        push!(deleted, (list[i], list[j]))
+        lmax = j
+        break
+      end
+    end
+    i = i+1
+  end
+  return deleted
+end
+
+const crc32 = crc(CRC_32)
+
+"Run crc32 on the first `buflen` bytes of a file"
+function partialcrc32(a::IO; buflen::Int=1048576)
+  buf_a = Array{UInt8}(buflen)
+  n_a = readbytes!(a, buf_a)
+  if n_a != length(buf_a)
+    buf_a = buf_a[1:n_a]
+  end
+  return crc32(buf_a)
+end
+
+"Divide list by crc, and run deldups on each sub-list"
+crcdeldups(list, dfun; kwargs...) =
+  processdups(x->open(crc32, x.realpath), lst->deldups(lst, dfun; kwargs...), list, quickpair=true)
+
+"Divide list by partial crc, and run crcdeldups on each sub-list"
+pcrcdeldups(list, dfun; kwargs...) =
+  processdups(x->open(partialcrc32, x.realpath), lst->crcdeldups(lst, dfun; kwargs...), list)
+
+"Divide list by size, then run pcrcdeldups/crcdeldups on each sub-sub-list"
+sizcrcdeldups(list, dfun; kwargs...) =
+  processdups(x->x.stat.size, lst->lst[1].stat.size>1048576?pcrcdeldups(lst, dfun; kwargs...):crcdeldups(lst, dfun; kwargs...), list)
+
+"""
+   `list = deduplicate_files(startdirs, dfun)`
+
+Scan `startdirs` recursively for files, call dfun on pairs of suspected
+duplicates, and delete identical copies when dfun returns true.
+"""
+function deduplicate_files(startdirs, dfun; verbose::Bool=false, kwargs...)
+  list = indexfiles(startdirs)
+  if verbose
+    println("Indexed ", length(list), " files.")
+  end
+  push!(kwargs, (:verbose, verbose))
+  sizcrcdeldups(collect(list), dfun; kwargs...)
+end
+
+# Define a `show` method for tuples of deduplication files, to make it easier to
+# read the returned array from `deduplicate_files`.
+import Base.show
+show(io::IO, t::Tuple{DeduplicationFile, DeduplicationFile}) = print(io,
+  joinpath(t[1].start, t[1].relpath), " duplicate of ", joinpath(t[2].start, t[2].relpath))
+
+"The total size (in bytes) of an array of `DeduplicationFile`s"
+totalsize(x::DeduplicationFile) = x.stat.size
+totalsize(x::Tuple{DeduplicationFile, DeduplicationFile}) = totalsize(x[1])
+totalsize(x::AbstractArray) = sum(totalsize.(x))
+
+# TODO: Check with dfun that at least one duplicate might be deleted
+#       before doing CRC.
 
 end # module
