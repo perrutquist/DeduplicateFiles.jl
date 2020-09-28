@@ -254,7 +254,7 @@ const crc32 = crc(CRC_32)
 
 "Run crc32 on the first `buflen` bytes of a file"
 function partialcrc32(a::IO; buflen::Int=1048576)
-  buf_a = Array{UInt8}(buflen)
+  buf_a = Array{UInt8}(undef, buflen)
   n_a = readbytes!(a, buf_a)
   if n_a != length(buf_a)
     buf_a = buf_a[1:n_a]
