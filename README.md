@@ -27,7 +27,7 @@ pair of files. It is required to be consistent in its choice of files to
 delete. So we use alphabetical ordering of the file paths as a tie breaker.
 
 ```
-list = deduplicate_files("foo", (a,b)->A.realpath > B.realpath, verbose=true, dry_run=true)
+list = deduplicate_files("foo", (a,b) -> a.realpath > b.realpath, verbose=true, dry_run=true)
 ```
 
 We then examine the returned list. If all looks good, we re-run the command
