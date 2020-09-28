@@ -1,5 +1,5 @@
 using DeduplicateFiles
-using Base.Test
+using Test
 
 # A temporary directory to do tests in
 const testdir = mktempdir();

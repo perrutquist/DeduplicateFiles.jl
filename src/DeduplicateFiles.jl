@@ -6,7 +6,7 @@ export DeduplicationFile, same_file, identical_files,
        delete_duplicate_file, indexfiles, deduplicate_files
 
 "A structure with data about files to keep/delete."
-type DeduplicationFile
+struct DeduplicationFile
   start::String
   realstart::String
   relpath::String
@@ -60,8 +60,8 @@ end
 function identical_files(a::IO, b::IO; buflen::Int=1048576)
   stat(a).size == stat(b).size || return false
   # TODO: Option to pass buffers as arguments and avoid repeated allocation.
-  buf_a = Array{UInt8}(buflen)
-  buf_b = Array{UInt8}(buflen)
+  buf_a = Array{UInt8}(undef, buflen)
+  buf_b = Array{UInt8}(undef, buflen)
   while (n_a = readbytes!(a, buf_a)) > 0
     n_b = readbytes!(b, buf_b)
     n_a == n_b || return false
@@ -134,7 +134,7 @@ function delete_duplicate_file(; delete::AbstractString="", keep::AbstractString
 
   hl || identical_files(delete, keep) || return false
 
-  verbose && println(dry_run?"Would delete ":"Deleting ", delete, " as duplicate of ", keep, " (", stat(delete).size, " byters)")
+  verbose && println(dry_run ? "Would delete " : "Deleting ", delete, " as duplicate of ", keep, " (", stat(delete).size, " byters)")
 
   if !dry_run && (!hl || ( hl && delete_hardlinks && replace_with != :hardlink ))
     rm(delete)
@@ -272,7 +272,7 @@ pcrcdeldups(list, dfun; kwargs...) =
 
 "Divide list by size, then run pcrcdeldups/crcdeldups on each sub-sub-list"
 sizcrcdeldups(list, dfun; kwargs...) =
-  processdups(x->x.stat.size, lst->lst[1].stat.size>1048576?pcrcdeldups(lst, dfun; kwargs...):crcdeldups(lst, dfun; kwargs...), list)
+  processdups(x->x.stat.size, lst -> lst[1].stat.size>1048576 ? pcrcdeldups(lst, dfun; kwargs...) : crcdeldups(lst, dfun; kwargs...), list)
 
 """
    `list = deduplicate_files(startdirs, dfun)`
@@ -285,8 +285,7 @@ function deduplicate_files(startdirs, dfun; verbose::Bool=false, kwargs...)
   if verbose
     println("Indexed ", length(list), " files.")
   end
-  push!(kwargs, (:verbose, verbose))
-  sizcrcdeldups(collect(list), dfun; kwargs...)
+   sizcrcdeldups(collect(list), dfun; verbose=verbose, kwargs...)
 end
 
 # Define a `show` method for tuples of deduplication files, to make it easier to
